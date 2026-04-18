@@ -1,85 +1,135 @@
+# auth.py
 import uuid
-import time
 from fastapi import APIRouter, HTTPException, Response, Request, Cookie, status
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter()
 
-SECRET_KEY = "my-super-secret-key-for-signing-sessions"
-serializer = URLSafeTimedSerializer(SECRET_KEY)
-sessions = {}
+# Хранилище сессий и пользователей
+# В реальном приложении это была бы база данных
+sessions = {}  # {session_token: username}
+users_db = {}  # {username: {"password": str, "user_id": str, "email": str}}
 
-class LoginForm(BaseModel):
+
+# Модель для логина
+class LoginRequest(BaseModel):
     username: str
     password: str
 
-def verify_credentials(username: str, password: str) -> bool:
-    return bool(username and password)
 
+# Модель для ответа с профилем
+class UserProfile(BaseModel):
+    username: str
+    user_id: str
+    email: str
+
+
+
+def verify_credentials(username: str, password: str) -> Optional[dict]:
+
+
+    test_users = {
+        "user123": {"password": "password123", "user_id": str(uuid.uuid4()), "email": "user123@example.com"},
+        "alice": {"password": "alice123", "user_id": str(uuid.uuid4()), "email": "alice@example.com"},
+        "bob": {"password": "bob123", "user_id": str(uuid.uuid4()), "email": "bob@example.com"}
+    }
+
+    if username in test_users and test_users[username]["password"] == password:
+        return test_users[username]
+    return None
+
+
+# Задание 5.1 - Маршрут логина
 @router.post("/login")
-async def login(login_data: LoginForm, response: Response):
-    if not verify_credentials(login_data.username, login_data.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+async def login(login_data: LoginRequest, response: Response):
 
-    user_id = str(uuid.uuid4())
-    current_time = int(time.time())
 
-    sessions[user_id] = {"last_activity": current_time}
+    user_data = verify_credentials(login_data.username, login_data.password)
 
-    data = f"{user_id}.{current_time}"
-    signed_token = serializer.dumps(data)
-
-    response.set_cookie(
-        key="session_token",
-        value=signed_token,
-        httponly=True,
-        max_age=300,
-        secure=False
-    )
-    return {"message": "Login successful"}
-
-@router.get("/profile")
-async def get_profile(request: Request, response: Response, session_token: str = Cookie(None)):
-    if not session_token:
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    try:
-        data = serializer.loads(session_token, max_age=300)
-        user_id, timestamp_str = data.split(".")
-        timestamp = int(timestamp_str)
-    except (BadSignature, SignatureExpired, ValueError):
-        raise HTTPException(status_code=401, detail="Invalid session")
-
-    if user_id not in sessions:
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    last_activity = sessions[user_id]["last_activity"]
-    current_time = int(time.time())
-    elapsed = current_time - last_activity
-
-    if elapsed > 300:
-        del sessions[user_id]
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    if timestamp != last_activity:
-        raise HTTPException(status_code=401, detail="Invalid session")
-
-    if elapsed >= 180 and elapsed < 300:
-        new_timestamp = current_time
-        sessions[user_id]["last_activity"] = new_timestamp
-        new_data = f"{user_id}.{new_timestamp}"
-        new_signed = serializer.dumps(new_data)
-        response.set_cookie(
-            key="session_token",
-            value=new_signed,
-            httponly=True,
-            max_age=300,
-            secure=False
+    if not user_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверное имя пользователя или пароль"
         )
 
-    return {
-        "user_id": user_id,
-        "username": "testuser",
-        "last_activity": sessions[user_id]["last_activity"]
+    session_token = str(uuid.uuid4())
+
+
+    sessions[session_token] = {
+        "username": login_data.username,
+        "user_id": user_data["user_id"],
+        "email": user_data["email"]
     }
+
+    # Устанавливаем cookie
+    response.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,  # Защита от XSS - JavaScript не может получить доступ к cookie
+        max_age=300,  # Время жизни 5 минут (как в задании 5.3)
+        secure=False,  # Для тестирования (в продакшене должно быть True)
+        samesite="lax"  # Защита от CSRF
+    )
+
+    return {
+        "message": "Успешный вход в систему",
+        "session_token": session_token,  # Выводим токен в ответе для наглядности
+        "user_id": user_data["user_id"]
+    }
+
+
+# Задание 5.1 - Защищенный маршрут /user (в задании указан /user)
+@router.get("/user")
+async def get_user_profile(session_token: Optional[str] = Cookie(None)):
+
+    # Проверяем наличие токена
+    if not session_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized"
+        )
+
+    # Проверяем валидность токена
+    if session_token not in sessions:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized"
+        )
+
+    # Получаем данные пользователя
+    user_info = sessions[session_token]
+
+    return {
+        "message": "Информация профиля пользователя",
+        "username": user_info["username"],
+        "user_id": user_info["user_id"],
+        "email": user_info["email"]
+    }
+
+
+# Дополнительный маршрут для выхода (logout)
+@router.post("/logout")
+async def logout(response: Response, session_token: Optional[str] = Cookie(None)):
+
+    if session_token and session_token in sessions:
+        del sessions[session_token]
+
+    # Удаляем cookie
+    response.delete_cookie("session_token")
+
+    return {"message": "Выход выполнен успешно"}
+
+
+# Маршрут для просмотра активных сессий (только для отладки)
+@router.get("/sessions")
+async def list_sessions():
+
+    active_sessions = []
+    for token, user_info in sessions.items():
+        active_sessions.append({
+            "session_token": token,
+            "username": user_info["username"],
+            "user_id": user_info["user_id"]
+        })
+    return {"active_sessions": active_sessions}

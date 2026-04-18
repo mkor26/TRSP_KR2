@@ -1,27 +1,25 @@
 # main.py
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from products import router as products_router
 from auth import router as auth_router
 from headers import router as headers_router
 from models import UserCreate
 
-app = FastAPI()
+app = FastAPI(
+    title="Контрольная работа №2",
+    version="1.0",
+    description="API для контрольной работы по FastAPI"
+)
 
-@app.post("/create_user", response_model=UserCreate)
+# Задание 3.1 – маршрут создания пользователя
+@app.post("/create_user", response_model=UserCreate, tags=["users"])
 async def create_user(user: UserCreate):
     return user
 
-app.include_router(products_router)
-app.include_router(auth_router)
-app.include_router(headers_router)
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"message": exc.detail}
-    )
+# Подключаем роутеры
+app.include_router(products_router, tags=["products"])
+app.include_router(auth_router, tags=["auth"])  # Здесь подключены маршруты /login, /user
+app.include_router(headers_router, tags=["headers"])
 
 @app.get("/")
 async def root():
@@ -30,11 +28,11 @@ async def root():
         "endpoints": {
             "users": "/create_user (POST)",
             "products": "/product/{id} (GET), /products/search (GET)",
-            "auth": "/login (POST), /profile (GET)",
+            "auth": "/login (POST), /user (GET), /logout (POST)",
             "headers": "/headers (GET), /info (GET)"
         }
     }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
